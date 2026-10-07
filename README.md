@@ -1,105 +1,107 @@
 # oMLX Local AI Server
 
-Turn an Apple Silicon Mac into a private, OpenAI-compatible local inference server using **oMLX**, **MLX models**, optional **Lightning MTP acceleration**, and **SSH tunneling**.
+<p align="center">
+  <strong>Turn an Apple Silicon Mac into a private, OpenAI-compatible local inference server with oMLX.</strong>
+</p>
 
-This repository is intended as a reproducible setup guide for developers who want to:
+<p align="center">
+  <img alt="Apple Silicon" src="https://img.shields.io/badge/Apple%20Silicon-M1%E2%80%93M5-black?logo=apple">
+  <img alt="macOS" src="https://img.shields.io/badge/macOS-Apple%20Silicon-black?logo=apple">
+  <img alt="oMLX" src="https://img.shields.io/badge/oMLX-0.7.0-4f46e5">
+  <img alt="OpenAI compatible API" src="https://img.shields.io/badge/API-OpenAI%20Compatible-10a37f">
+  <img alt="Local inference" src="https://img.shields.io/badge/Inference-Local-2563eb">
+  <img alt="SSH tunnel" src="https://img.shields.io/badge/Remote%20Access-SSH%20Tunnel-334155">
+</p>
 
-- run capable LLMs locally on Apple Silicon;
-- expose them through an OpenAI-compatible API;
-- keep the inference server bound to `localhost`;
-- access the server securely from another Mac or workstation over SSH;
-- benchmark real prompt/decode performance;
-- tune memory usage on constrained unified-memory systems;
-- automate start/stop/status/test workflows with a `Makefile`.
+Run capable local LLMs on Apple Silicon, expose them through an OpenAI-compatible API, access them securely over SSH, tune memory usage, enable Lightning MTP, benchmark real throughput, and automate common operations with a `Makefile`.
 
-> Tested profile: **Mac mini M5 Pro, 24 GB unified memory, macOS 27.0, oMLX 0.7.0, Qwen3.8-27B-oQ4e-mtp**.
+> [!IMPORTANT]
+> This guide includes a **tested profile for a Mac mini M5 Pro with 24 GB unified memory**, but the general setup is reusable across Apple Silicon Macs.
+>
+> Performance numbers in this repository are measurements from one machine, not guarantees.
 
 ---
 
-## Table of contents
+## Contents
 
 - [What this builds](#what-this-builds)
-- [Tested hardware and software](#tested-hardware-and-software)
+- [Tested configuration](#tested-configuration)
 - [Observed performance](#observed-performance)
+- [Quick start](#quick-start)
 - [Requirements](#requirements)
-- [1. Install oMLX](#1-install-omlx)
-- [2. Verify oMLX](#2-verify-omlx)
-- [3. Start the server manually](#3-start-the-server-manually)
-- [4. Install the Hugging Face CLI](#4-install-the-hugging-face-cli)
-- [5. Download a model](#5-download-a-model)
-- [6. Verify model discovery](#6-verify-model-discovery)
-- [7. Configure the oMLX API key](#7-configure-the-omlx-api-key)
-- [8. Store the API key safely in your shell](#8-store-the-api-key-safely-in-your-shell)
-- [9. Test the OpenAI-compatible API](#9-test-the-openai-compatible-api)
-- [10. Access the Mac remotely through SSH](#10-access-the-mac-remotely-through-ssh)
-- [11. Configure Lightning MTP](#11-configure-lightning-mtp)
-- [12. Memory tuning](#12-memory-tuning)
-- [13. Benchmarking](#13-benchmarking)
-- [14. Run oMLX as a background service](#14-run-omlx-as-a-background-service)
-- [15. Makefile automation](#15-makefile-automation)
-- [16. Use it from Python](#16-use-it-from-python)
-- [17. Troubleshooting](#17-troubleshooting)
-- [18. Security notes](#18-security-notes)
-- [19. Useful paths](#19-useful-paths)
-- [20. Known-good M5 Pro 24 GB profile](#20-known-good-m5-pro-24-gb-profile)
+- [Install oMLX](#install-omlx)
+- [Install the Hugging Face CLI](#install-the-hugging-face-cli)
+- [Download a model](#download-a-model)
+- [Start oMLX](#start-omlx)
+- [Configure API authentication](#configure-api-authentication)
+- [Test the API](#test-the-api)
+- [Remote access with SSH](#remote-access-with-ssh)
+- [Lightning MTP](#lightning-mtp)
+- [Memory guard and memory tuning](#memory-guard-and-memory-tuning)
+- [Benchmarking](#benchmarking)
+- [Run oMLX as a background service](#run-omlx-as-a-background-service)
+- [Makefile automation](#makefile-automation)
+- [Use oMLX from Python](#use-omlx-from-python)
+- [Troubleshooting](#troubleshooting)
+- [Security](#security)
+- [Useful paths](#useful-paths)
+- [Known-good M5 Pro 24 GB profile](#known-good-m5-pro-24-gb-profile)
+- [Contributing benchmarks](#contributing-benchmarks)
 
 ---
 
-## What this builds
+# What this builds
 
-```text
-┌──────────────────────────┐
-│ Client Mac / workstation │
-│                          │
-│ localhost:18000          │
-└────────────┬─────────────┘
-             │
-             │ SSH tunnel
-             │
-             ▼
-┌──────────────────────────┐
-│ Apple Silicon Mac        │
-│                          │
-│ oMLX                     │
-│ 127.0.0.1:8000           │
-│        │                 │
-│        ▼                 │
-│ Qwen / MLX model         │
-│ GPU + Unified Memory     │
-└──────────────────────────┘
+```mermaid
+flowchart LR
+    A["Client Mac / workstation<br/>localhost:18000"] -->|"Encrypted SSH tunnel"| B["Apple Silicon inference Mac<br/>localhost:8000"]
+    B --> C["oMLX"]
+    C --> D["OpenAI-compatible API"]
+    C --> E["MLX model<br/>Qwen / other supported model"]
+    E --> F["Apple GPU + Unified Memory"]
 ```
 
-The inference machine remains reachable only through its own localhost interface. The client connects through an encrypted SSH tunnel.
+The recommended setup keeps oMLX bound to the inference Mac's own `localhost`.
 
-This gives local applications an endpoint such as:
+The client machine reaches it through an SSH tunnel:
 
 ```text
+Client
 http://localhost:18000/v1
+        │
+        │ SSH tunnel
+        ▼
+Inference Mac
+http://localhost:8000/v1
+        │
+        ▼
+      oMLX
 ```
 
-while the model actually runs on the remote Mac.
+> [!TIP]
+> Keeping oMLX on `localhost` and tunneling over SSH is safer than exposing port `8000` directly to your LAN or the Internet.
 
 ---
 
-## Tested hardware and software
+# Tested configuration
 
-The reference setup used while writing this guide:
+The reference system used while building and benchmarking this guide:
 
-```text
-Machine:        Mac mini
-SoC:            Apple M5 Pro
-Architecture:   arm64
-Unified memory: 24 GiB
-macOS:          27.0
-oMLX:           0.7.0
-Model:          Jundot/Qwen3.8-27B-oQ4e-mtp
-Model size:     ~16 GiB on disk
-Quantization:   oQ4e / 4-bit class
-Lightning MTP:  enabled
-MTP depth:      adaptive max depth 3
-```
+| Component | Value |
+|---|---|
+| Machine | Mac mini |
+| SoC | Apple M5 Pro |
+| Architecture | `arm64` |
+| Unified memory | 24 GiB |
+| macOS | 27.0 |
+| oMLX | 0.7.0 |
+| Model | `Jundot/Qwen3.8-27B-oQ4e-mtp` |
+| Model disk usage | ~16 GiB |
+| Lightning MTP | Enabled |
+| Adaptive MTP depth | 3 |
+| Memory guard | Aggressive |
 
-Check your own machine:
+Check your own system:
 
 ```bash
 sw_vers
@@ -107,58 +109,64 @@ uname -m
 sysctl -n hw.memsize
 ```
 
-Convert memory bytes to GiB if needed:
+Convert physical memory to GiB:
 
 ```bash
 python3 - <<'PY'
 import subprocess
-b = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]))
-print(f"{b / 1024**3:.0f} GiB")
+
+memory_bytes = int(
+    subprocess.check_output(["sysctl", "-n", "hw.memsize"]).decode().strip()
+)
+
+print(f"{memory_bytes / 1024**3:.0f} GiB")
 PY
 ```
 
 ---
 
-## Observed performance
+# Observed performance
 
-These numbers are **measurements from one M5 Pro 24 GB machine**, not guarantees for other Macs.
+The reference machine was benchmarked with long code-generation prompts.
 
-### Baseline without Lightning MTP
+## Baseline vs Lightning MTP
 
-Long code-generation request:
+| Configuration | TTFT | Decode speed | Total time |
+|---|---:|---:|---:|
+| Baseline, no MTP | 0.53 s | 16.91 tok/s | 59.66 s |
+| MTP depth 3, warm | **0.27 s** | **26.09 tok/s** | **38.60 s** |
+| MTP depth 3, second long prompt | 0.83 s | **27.07 tok/s** | 45.16 s |
 
-```text
-generation: ~16.9 tok/s
-TTFT:       ~0.53 s
-```
-
-### Lightning MTP enabled, adaptive depth 3
-
-Warm run:
-
-```text
-generation: 26.09 tok/s
-TTFT:       0.27 s
-total:      38.60 s for a 1000-token completion
-```
-
-Second long prompt:
-
-```text
-generation: 27.07 tok/s
-TTFT:       0.83 s
-total:      45.16 s for a 1200-token completion
-```
-
-The tested machine therefore sustained roughly:
+Approximate sustained decode rate with Lightning MTP:
 
 ```text
 26–27 output tokens/second
 ```
 
-with Lightning MTP enabled.
+That was roughly a **54% improvement** over the measured baseline on the tested machine.
 
-The baseline and MTP tests used the same model. Actual performance depends on model, quantization, prompt length, cache state, context size, thermals, OS version, oMLX version, and memory pressure.
+> [!NOTE]
+> Real throughput depends on model, quantization, prompt length, context length, cache state, macOS version, oMLX version, memory pressure, thermals, and background workloads.
+
+---
+
+# Quick start
+
+Use this checklist if you already know what you are doing:
+
+- [ ] Install oMLX.
+- [ ] Install the Hugging Face CLI.
+- [ ] Download a compatible MLX model.
+- [ ] Start `omlx serve`.
+- [ ] Confirm `/v1/models`.
+- [ ] Configure an API key.
+- [ ] Export `OMLX_API_KEY`.
+- [ ] Test `/v1/chat/completions`.
+- [ ] Enable Lightning MTP if supported.
+- [ ] Check memory pressure and swap.
+- [ ] Benchmark a warm request.
+- [ ] Optionally configure the background service.
+- [ ] Optionally configure an SSH tunnel.
 
 ---
 
@@ -166,12 +174,11 @@ The baseline and MTP tests used the same model. Actual performance depends on mo
 
 You need:
 
-- Apple Silicon Mac;
-- a supported recent macOS version;
+- an Apple Silicon Mac;
 - Homebrew;
-- SSH enabled if you want remote access;
-- enough disk space for your model;
-- enough unified memory for the chosen quantization.
+- enough free disk space for the model;
+- enough unified memory for the chosen model and quantization;
+- SSH enabled if you want remote access.
 
 Check Homebrew:
 
@@ -179,17 +186,20 @@ Check Homebrew:
 brew --version
 ```
 
-Check free disk space:
+Check available storage:
 
 ```bash
 df -h ~
 ```
 
+> [!TIP]
+> For larger models, leave significantly more free disk space than the final model size. Downloads may temporarily require additional space while shards are reconstructed.
+
 ---
 
-# 1. Install oMLX
+# Install oMLX
 
-Add the official oMLX Homebrew tap:
+Add the oMLX Homebrew tap:
 
 ```bash
 brew tap jundot/omlx https://github.com/jundot/omlx
@@ -201,8 +211,6 @@ Install oMLX:
 brew install jundot/omlx/omlx
 ```
 
-The Homebrew formula may install development/runtime dependencies such as Python, Rust and LLVM. This can consume several gigabytes.
-
 Verify:
 
 ```bash
@@ -210,89 +218,29 @@ omlx --version
 which omlx
 ```
 
-Example tested output:
+Example from the tested machine:
 
 ```text
 0.7.0
 /opt/homebrew/bin/omlx
 ```
 
-Check service state:
+Check whether the Homebrew service is running:
 
 ```bash
 brew services info omlx
 ```
 
-For the initial setup, it is easier to leave the background service stopped and run the server manually.
+> [!NOTE]
+> The Homebrew installation can pull in large dependencies such as Python, Rust, and LLVM. The installation footprint may therefore be much larger than the oMLX executable itself.
+
+For initial setup, keeping the managed service stopped is useful because running oMLX manually exposes logs directly in your terminal.
 
 ---
 
-# 2. Verify oMLX
+# Install the Hugging Face CLI
 
-Create the default model directory:
-
-```bash
-mkdir -p ~/.omlx/models
-```
-
-Start oMLX in the foreground:
-
-```bash
-omlx serve
-```
-
-Leave that terminal open.
-
-In another terminal on the inference Mac:
-
-```bash
-curl -s http://localhost:8000/v1/models
-```
-
-Before installing models, a healthy server should return something similar to:
-
-```json
-{
-  "object": "list",
-  "data": []
-}
-```
-
-Stop the foreground server with:
-
-```text
-Ctrl+C
-```
-
----
-
-# 3. Start the server manually
-
-The simplest development workflow is:
-
-```bash
-omlx serve
-```
-
-The default API endpoint is:
-
-```text
-http://localhost:8000/v1
-```
-
-The admin UI is:
-
-```text
-http://localhost:8000/admin
-```
-
-Running in the foreground is useful during initial setup because logs and errors are immediately visible.
-
----
-
-# 4. Install the Hugging Face CLI
-
-Install the current Hugging Face CLI through Homebrew:
+Install the current CLI:
 
 ```bash
 brew install hf
@@ -304,7 +252,7 @@ Verify:
 hf version
 ```
 
-Authentication is not required for public models, although anonymous downloads can have lower rate limits.
+Public repositories can be downloaded without authentication.
 
 Optional login:
 
@@ -312,71 +260,108 @@ Optional login:
 hf auth login
 ```
 
-Never commit Hugging Face access tokens.
+> [!WARNING]
+> Never commit Hugging Face access tokens to Git.
 
 ---
 
-# 5. Download a model
+# Download a model
 
-This guide used:
+The tested model is:
 
 ```text
 Jundot/Qwen3.8-27B-oQ4e-mtp
 ```
 
-Download it into the directory watched by oMLX:
+Create the default model directory:
+
+```bash
+mkdir -p ~/.omlx/models
+```
+
+Download:
 
 ```bash
 hf download Jundot/Qwen3.8-27B-oQ4e-mtp \
   --local-dir ~/.omlx/models/Qwen3.8-27B-oQ4e-mtp
 ```
 
-The tested download reconstructed approximately 17 GB of model data and occupied about 16 GiB on disk.
-
-Verify:
+Verify disk usage:
 
 ```bash
 du -sh ~/.omlx/models/Qwen3.8-27B-oQ4e-mtp
 ```
 
-Inspect the files:
+Inspect the directory:
 
 ```bash
 ls -lh ~/.omlx/models/Qwen3.8-27B-oQ4e-mtp
 ```
 
-A complete sharded model should contain files such as:
+<details>
+<summary><strong>Expected files for the tested Qwen model</strong></summary>
 
 ```text
-config.json
-tokenizer.json
+README.md
 chat_template.jinja
-model.safetensors.index.json
+config.json
+generation_config.json
+merges.txt
 model-00001-of-00004.safetensors
 model-00002-of-00004.safetensors
 model-00003-of-00004.safetensors
 model-00004-of-00004.safetensors
+model.safetensors.index.json
+oq_imatrix_report.json
+preprocessor_config.json
+tokenizer.json
+tokenizer_config.json
+vocab.json
 ```
 
-Do not interrupt Hugging Face while it is still reconstructing model files.
+</details>
+
+> [!IMPORTANT]
+> Wait until the Hugging Face client finishes both downloading and reconstructing the model before starting oMLX.
 
 ---
 
-# 6. Verify model discovery
+# Start oMLX
 
-Start oMLX again:
+Run the server in the foreground:
 
 ```bash
 omlx serve
 ```
 
-Then:
+The default endpoints are:
+
+| Purpose | URL |
+|---|---|
+| API root | `http://localhost:8000/v1` |
+| Models | `http://localhost:8000/v1/models` |
+| Chat completions | `http://localhost:8000/v1/chat/completions` |
+| Admin UI | `http://localhost:8000/admin` |
+
+Leave the terminal running.
+
+To stop the foreground server:
+
+<kbd>Ctrl</kbd> + <kbd>C</kbd>
+
+---
+
+## Verify model discovery
+
+From a second terminal:
 
 ```bash
 curl -s http://localhost:8000/v1/models
 ```
 
-Before configuring API authentication, the tested setup returned:
+Before authentication is configured, a detected model should appear in the response.
+
+Example:
 
 ```json
 {
@@ -392,59 +377,58 @@ Before configuring API authentication, the tested setup returned:
 }
 ```
 
-`max_model_len` is the model's advertised maximum. It is **not** a recommendation to use that entire context window on a memory-constrained Mac.
-
-On 24 GB machines, start with a much smaller practical context.
+> [!WARNING]
+> `max_model_len` describes a model capability. It does **not** mean your Mac has enough memory to use that full context window safely.
 
 ---
 
-# 7. Configure the oMLX API key
+# Configure API authentication
 
-The admin dashboard may ask you to create an API key on first use.
-
-Generate a strong local key:
-
-```bash
-openssl rand -hex 32
-```
-
-This generates 32 random bytes represented as 64 hexadecimal characters.
-
-Example format:
-
-```text
-f4c2...64-hex-characters...91ab
-```
-
-Do **not** reuse the example above.
-
-Do **not** paste your real key into issues, screenshots, chat messages, Git commits, shell scripts, or public repositories.
-
-Open the dashboard:
+Open:
 
 ```text
 http://localhost:8000/admin
 ```
 
-If the inference Mac is remote, use the SSH tunnel described later in this guide.
+On first setup, the admin panel can prompt you to create an API key.
 
-On the first-access screen:
+## Generate a strong key
 
-1. paste the generated key into **API Key**;
-2. paste it again into **Confirm API Key**;
-3. click **Set API Key**.
+Use OpenSSL:
 
-After authentication is enabled, API calls should send:
-
-```http
-Authorization: Bearer YOUR_API_KEY
+```bash
+openssl rand -hex 32
 ```
+
+This produces 32 random bytes encoded as 64 hexadecimal characters.
+
+Paste the generated value into:
+
+```text
+API Key
+Confirm API Key
+```
+
+Then save it through the admin UI.
+
+> [!CAUTION]
+> Treat the API key as a secret.
+>
+> Do not paste it into:
+>
+> - GitHub issues;
+> - screenshots;
+> - README files;
+> - committed shell scripts;
+> - `Makefile`;
+> - public chat messages;
+> - `.env.example`.
 
 ---
 
-# 8. Store the API key safely in your shell
+## Load the key into the current shell
 
-For a temporary shell session on macOS/zsh:
+With `zsh`:
 
 ```bash
 read -s "OMLX_API_KEY?oMLX API key: "
@@ -452,25 +436,24 @@ echo
 export OMLX_API_KEY
 ```
 
-The key is not echoed to the terminal while you type it.
-
-Confirm only that the variable exists:
+Verify only that the variable exists:
 
 ```bash
 test -n "$OMLX_API_KEY" && echo "OMLX_API_KEY is set"
 ```
 
-Do not print the key itself.
-
-To remove it from the current shell:
+Remove it later:
 
 ```bash
 unset OMLX_API_KEY
 ```
 
+> [!TIP]
+> This avoids putting the secret directly into your shell command history.
+
 ---
 
-# 9. Test the OpenAI-compatible API
+# Test the API
 
 ## List models
 
@@ -479,6 +462,8 @@ curl -s http://localhost:8000/v1/models \
   -H "Authorization: Bearer $OMLX_API_KEY" \
   | python3 -m json.tool
 ```
+
+---
 
 ## Chat completion
 
@@ -499,6 +484,8 @@ curl -s http://localhost:8000/v1/chat/completions \
   }' \
   | python3 -m json.tool
 ```
+
+---
 
 ## Streaming
 
@@ -521,34 +508,34 @@ curl -N http://localhost:8000/v1/chat/completions \
 
 ---
 
-# 10. Access the Mac remotely through SSH
+# Remote access with SSH
 
-A good security model is:
+The recommended architecture is:
 
 ```text
-oMLX -> localhost only
-remote access -> SSH tunnel
+oMLX            -> localhost only
+Remote access   -> SSH tunnel
 ```
 
-Avoid exposing the oMLX port directly to the Internet.
+## Same local port
 
-## Tunnel using the same local port
-
-On the **client machine**, not inside the remote SSH shell:
+Run this on the **client machine**:
 
 ```bash
 ssh -N -L 8000:localhost:8000 user@MAC_IP
 ```
 
-Then the remote oMLX server appears locally at:
+The remote oMLX instance becomes available locally at:
 
 ```text
 http://localhost:8000
 ```
 
-## Recommended tunnel using a different local port
+---
 
-Using `18000` locally avoids conflicts if port 8000 is already occupied:
+## Recommended: use a different local port
+
+Using `18000` avoids conflicts with a local development server:
 
 ```bash
 ssh -N -L 18000:localhost:8000 user@MAC_IP
@@ -561,65 +548,66 @@ API:   http://localhost:18000/v1
 Admin: http://localhost:18000/admin
 ```
 
-The architecture is:
+> [!IMPORTANT]
+> Run the tunnel command on the client machine, not inside the SSH session running on the inference Mac.
 
-```text
-Client
-localhost:18000
-      │
-      │ encrypted SSH tunnel
-      ▼
-Inference Mac
-localhost:8000
-      │
-      ▼
-oMLX
-```
-
-Keep the SSH process running while you use the tunnel.
+> [!TIP]
+> Keep oMLX bound to `localhost`. The SSH connection provides the remote transport.
 
 ---
 
-# 11. Configure Lightning MTP
+# Lightning MTP
 
-The tested Qwen model includes support for Lightning MTP.
+Lightning MTP can accelerate decoding on supported model architectures/checkpoints.
 
-Open:
-
-```text
-http://localhost:8000/admin
-```
-
-If remote:
-
-```text
-http://localhost:18000/admin
-```
-
-Select:
+For the tested model:
 
 ```text
 Qwen3.8-27B-oQ4e-mtp
 ```
 
-Open the model settings and enable:
+open:
+
+```text
+http://localhost:8000/admin
+```
+
+or, through the SSH tunnel:
+
+```text
+http://localhost:18000/admin
+```
+
+Select the model and configure:
 
 ```text
 Lightning MTP: ON
 Adaptive max depth: 3
 ```
 
-For the tested 24 GB machine, **depth 3** was a good balance between performance and memory usage.
+The tested M5 Pro 24 GB system achieved approximately:
 
-Do not assume that higher depth is automatically better. Benchmark each setting on your own hardware.
+```text
+16.9 tok/s -> 26–27 tok/s
+```
 
-Changing MTP settings can cause the model/runtime to reload. Ignore the first run as a warm-up when comparing steady-state performance.
+when moving from the baseline to Lightning MTP depth 3.
+
+> [!WARNING]
+> A larger MTP depth does **not** automatically mean better performance.
+>
+> Higher values can increase memory usage and may not improve accepted-token efficiency.
+>
+> Benchmark every configuration on your own machine.
+
+> [!NOTE]
+> Changing MTP settings can trigger a model/runtime reload. Do not use the first request immediately after a configuration change as your steady-state benchmark.
 
 ---
 
-# 12. Memory tuning
+# Memory guard and memory tuning
 
-Large models can fit in unified memory while still leaving too little headroom for macOS.
+Large MLX models can consume most of the available unified memory while still remaining usable.
 
 Useful commands:
 
@@ -645,27 +633,29 @@ Inspect the oMLX process:
 ps -axo pid,rss,vsz,command | grep '[o]mlx'
 ```
 
-### Important Apple Silicon note
+---
 
-The process RSS is **not** the whole story.
+## Apple Silicon memory behavior
 
-MLX/Metal allocations can appear as large amounts of system-wide wired/unified memory, so:
+> [!NOTE]
+> Process RSS does **not** necessarily represent the complete memory footprint of an MLX workload.
+>
+> MLX/Metal allocations can appear as wired or system-wide unified memory. A process showing a relatively small RSS may still be responsible for much larger GPU/unified-memory allocations.
 
-```text
-ps RSS
-```
+Evaluate memory using several signals together:
 
-may look much smaller than the actual memory footprint of the loaded model.
-
-Use `memory_pressure`, swap usage, and overall system behavior together.
+- `memory_pressure`;
+- swap usage;
+- pageouts;
+- throttled pages;
+- system responsiveness;
+- oMLX errors.
 
 ---
 
 ## Memory guard
 
-oMLX includes a prefill memory guard.
-
-Available tiers include:
+oMLX supports memory guard tiers such as:
 
 ```text
 safe
@@ -674,41 +664,49 @@ aggressive
 custom
 ```
 
-The tested 24 GB machine initially aborted a Qwen3.8-27B request under a conservative memory guard because the process crossed the dynamic prefill watermark.
+On the tested 24 GB machine, the initial request for the 27B model was aborted by the memory guard during prefill.
 
-Switching to the **aggressive** tier allowed the model to run successfully.
+Moving to the **aggressive** tier allowed the model to run successfully.
 
-This does **not** mean aggressive is universally appropriate.
+> [!CAUTION]
+> `aggressive` is not a universal recommendation.
+>
+> It allows oMLX to operate closer to the system's memory limit. On a 24 GB machine, that can leave macOS with much less headroom.
+>
+> Always inspect:
+>
+> ```bash
+> memory_pressure
+> sysctl vm.swapusage
+> ```
+>
+> before and after changing the guard tier.
 
-Use it only after checking:
-
-```bash
-memory_pressure
-sysctl vm.swapusage
-```
-
-and avoid disabling memory protection entirely unless you understand the consequences.
-
-On a 24 GB system, an OOM condition can make the entire desktop unresponsive.
+> [!WARNING]
+> Do not disable memory safeguards as your first troubleshooting step. A real out-of-memory condition can affect the entire desktop session.
 
 ---
 
-# 13. Benchmarking
+# Benchmarking
 
-Do not benchmark only one tiny response.
+A useful benchmark should measure more than one short response.
 
-Measure at least:
+Record:
 
-- model load time;
-- time to first token (TTFT);
-- prompt processing speed;
-- generation/decode speed;
-- total request time;
-- memory pressure;
-- swap usage;
-- cold vs warm requests.
+| Metric | Why it matters |
+|---|---|
+| Model load time | Cold-start cost |
+| TTFT | Perceived responsiveness |
+| Prompt tok/s | Prefill/input processing |
+| Generation tok/s | Decode speed |
+| Total time | End-to-end latency |
+| Swap usage | Memory headroom |
+| Memory pressure | System health |
+| Cold vs warm run | Cache/load effects |
 
-oMLX responses expose useful metrics in `usage`, for example:
+oMLX exposes timing metrics in the response `usage` object.
+
+Example:
 
 ```json
 {
@@ -717,6 +715,8 @@ oMLX responses expose useful metrics in `usage`, for example:
   "total_time": 38.60
 }
 ```
+
+---
 
 ## Repeatable long-generation benchmark
 
@@ -741,17 +741,31 @@ curl -s http://localhost:8000/v1/chat/completions \
 Run it at least twice:
 
 ```text
-Run 1 -> cold/reconfigured runtime
-Run 2 -> warm runtime
+Run 1 -> cold / recently reconfigured
+Run 2 -> warm
 ```
 
 Use the warm run for steady-state comparisons.
 
 ---
 
-# 14. Run oMLX as a background service
+## Check memory after the benchmark
 
-After the configuration is stable:
+```bash
+memory_pressure
+sysctl vm.swapusage
+```
+
+> [!TIP]
+> Benchmark the workload you actually care about. Coding, short chat, long context, RAG, agentic tool use, and batch inference stress different parts of the runtime.
+
+---
+
+# Run oMLX as a background service
+
+Once your configuration is stable, you can stop launching oMLX manually.
+
+Start:
 
 ```bash
 omlx start
@@ -769,7 +783,7 @@ Restart:
 omlx restart
 ```
 
-Status:
+Check status:
 
 ```bash
 brew services info omlx
@@ -784,17 +798,18 @@ brew services restart omlx
 brew services info omlx
 ```
 
-oMLX's Homebrew service uses its persisted settings.
+> [!NOTE]
+> When running Homebrew service commands over SSH, macOS can display warnings related to `/dev/console` ownership or the `user/*` launchd domain. Verify the actual service state with `brew services info omlx`.
 
 ---
 
-# 15. Makefile automation
+# Makefile automation
 
-A reusable `Makefile` is included with this repository.
+A simple project-level `Makefile` can expose the most common operations.
 
-Typical commands:
+Suggested targets:
 
-```bash
+```text
 make help
 make serve
 make start
@@ -805,17 +820,81 @@ make models
 make test
 make memory
 make logs
+make version
 ```
 
-The Makefile expects:
+Example:
 
-```text
-OMLX_API_KEY
+```make
+SHELL := /bin/zsh
+
+MODEL ?= Qwen3.8-27B-oQ4e-mtp
+BASE_URL ?= http://localhost:8000
+BREW_PREFIX := $(shell brew --prefix)
+
+.PHONY: help serve start stop restart status check-key models test memory logs version
+
+help:
+	@echo "oMLX Local AI Server"
+	@echo ""
+	@echo "  make serve    Run oMLX in the foreground"
+	@echo "  make start    Start the managed oMLX service"
+	@echo "  make stop     Stop the managed oMLX service"
+	@echo "  make restart  Restart the managed oMLX service"
+	@echo "  make status   Show Homebrew service status"
+	@echo "  make models   List API models"
+	@echo "  make test     Run a short inference test"
+	@echo "  make memory   Show memory pressure and swap"
+	@echo "  make logs     Follow oMLX logs"
+	@echo "  make version  Show oMLX version"
+
+serve:
+	omlx serve
+
+start:
+	omlx start
+
+stop:
+	omlx stop
+
+restart:
+	omlx restart
+
+status:
+	brew services info omlx
+
+version:
+	omlx --version
+
+check-key:
+	@test -n "$$OMLX_API_KEY" || \
+		(echo "OMLX_API_KEY is not set."; \
+		 echo 'Run: read -s "OMLX_API_KEY?oMLX API key: "; echo; export OMLX_API_KEY'; \
+		 exit 1)
+
+models: check-key
+	@curl -fsS "$(BASE_URL)/v1/models" \
+		-H "Authorization: Bearer $$OMLX_API_KEY" \
+		| python3 -m json.tool
+
+test: check-key
+	@curl -fsS "$(BASE_URL)/v1/chat/completions" \
+		-H "Authorization: Bearer $$OMLX_API_KEY" \
+		-H "Content-Type: application/json" \
+		-d '{"model":"$(MODEL)","messages":[{"role":"user","content":"Reply with exactly: oMLX is working"}],"temperature":0,"max_tokens":32}' \
+		| python3 -m json.tool
+
+memory:
+	@memory_pressure
+	@echo ""
+	@sysctl vm.swapusage
+
+logs:
+	@touch "$(HOME)/.omlx/logs/server.log" "$(BREW_PREFIX)/var/log/omlx.log"
+	tail -F "$(HOME)/.omlx/logs/server.log" "$(BREW_PREFIX)/var/log/omlx.log"
 ```
 
-for authenticated API operations.
-
-Load it securely into the current shell:
+Load the API key before authenticated targets:
 
 ```bash
 read -s "OMLX_API_KEY?oMLX API key: "
@@ -830,11 +909,14 @@ make models
 make test
 ```
 
+> [!IMPORTANT]
+> Do not hardcode your real API key in the `Makefile`.
+
 ---
 
-# 16. Use it from Python
+# Use oMLX from Python
 
-Install the OpenAI Python client in your project:
+Install the OpenAI Python client:
 
 ```bash
 python3 -m pip install openai
@@ -844,7 +926,9 @@ Example:
 
 ```python
 import os
+
 from openai import OpenAI
+
 
 client = OpenAI(
     base_url="http://localhost:8000/v1",
@@ -864,21 +948,25 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-When using an SSH tunnel on local port `18000`:
+When using the SSH tunnel on local port `18000`:
 
 ```python
-base_url="http://localhost:18000/v1"
+client = OpenAI(
+    base_url="http://localhost:18000/v1",
+    api_key=os.environ["OMLX_API_KEY"],
+)
 ```
 
-Your application does not need to know that inference is running on another Mac.
+Your application does not need to know that inference is physically running on another Mac.
 
 ---
 
-# 17. Troubleshooting
+# Troubleshooting
 
-## `hf: command not found`
+<details>
+<summary><strong><code>hf: command not found</code></strong></summary>
 
-Install:
+Install the Hugging Face CLI:
 
 ```bash
 brew install hf
@@ -890,86 +978,87 @@ Verify:
 hf version
 ```
 
+</details>
+
 ---
 
-## `/v1/models` returns an empty array
+<details>
+<summary><strong><code>/v1/models</code> returns an empty list</strong></summary>
 
-Example:
-
-```json
-{"object":"list","data":[]}
-```
-
-Check that your model directory exists:
+Check the model directory:
 
 ```bash
 ls ~/.omlx/models
 ```
 
-Check the model:
+Check the specific model:
 
 ```bash
 ls ~/.omlx/models/Qwen3.8-27B-oQ4e-mtp
 ```
 
-Restart the server:
+Restart oMLX:
 
 ```bash
 omlx restart
 ```
 
-or restart the foreground process.
+If you are still configuring the runtime manually, restart the foreground process instead.
+
+</details>
 
 ---
 
-## API key error
+<details>
+<summary><strong>API authentication error</strong></summary>
 
-Once authentication is configured, include:
+Authenticated requests require:
 
 ```bash
 -H "Authorization: Bearer $OMLX_API_KEY"
 ```
 
-Verify that the variable exists:
+Check that the variable exists:
 
 ```bash
 test -n "$OMLX_API_KEY" && echo "API key loaded"
 ```
 
-Do not print the secret.
+Do not print the key itself.
+
+</details>
 
 ---
 
-## Memory guard abort
+<details>
+<summary><strong>oMLX memory guard aborted the request</strong></summary>
 
-An error can look similar to:
-
-```text
-oMLX memory guard aborted this request mid-prefill
-```
-
-First inspect:
+Inspect:
 
 ```bash
 memory_pressure
 sysctl vm.swapusage
 ```
 
-Then consider, in order:
+Then try, in order:
 
-1. closing memory-heavy applications;
-2. reducing context;
-3. reducing concurrent requests;
-4. using a smaller/lower-memory model;
-5. moving the memory guard from safe/balanced to aggressive if your system has sufficient headroom.
+1. close memory-heavy applications;
+2. reduce context length;
+3. reduce request concurrency;
+4. use a smaller model or lower-memory quantization;
+5. move to a less conservative memory guard tier only if your system has sufficient headroom.
 
-Do not disable safeguards as the first solution.
+> [!CAUTION]
+> Do not immediately disable memory protection.
+
+</details>
 
 ---
 
-## Model loads but macOS shows almost all RAM used
+<details>
+<summary><strong>macOS reports almost all RAM as used</strong></summary>
 
-This can be normal with large MLX models.
+This can be expected with large MLX workloads.
 
 Check:
 
@@ -978,53 +1067,55 @@ memory_pressure
 sysctl vm.swapusage
 ```
 
-A large `PhysMem used` value alone does not prove the system is thrashing.
+A high `PhysMem used` number alone does not prove that the system is thrashing.
 
----
+Look for:
 
-## `brew services` warns about SSH
-
-When running Homebrew service commands from an SSH session you may see a warning about `/dev/console` ownership and the `user/*` domain.
-
-That warning does not necessarily mean oMLX failed.
-
-Check the actual state:
-
-```bash
-brew services info omlx
+```text
+Pages throttled
+Pageouts
+Swap used
+System-wide memory free percentage
 ```
 
+and evaluate system responsiveness.
+
+</details>
+
 ---
 
-## Port 8000 is already in use
+<details>
+<summary><strong>Port 8000 is already in use</strong></summary>
 
-Find the process:
+Find the listener:
 
 ```bash
 lsof -nP -iTCP:8000 -sTCP:LISTEN
 ```
 
-For a remote tunnel, simply use another local port:
+For a remote SSH tunnel, choose a different local port:
 
 ```bash
 ssh -N -L 18000:localhost:8000 user@MAC_IP
 ```
 
+</details>
+
 ---
 
-# 18. Security notes
+# Security
 
-Recommended:
+Recommended practices:
 
-- bind oMLX to localhost unless LAN exposure is intentional;
-- use SSH tunneling for remote access;
-- configure an API key;
-- generate secrets with a cryptographically secure tool such as `openssl`;
-- keep secrets out of Git;
+- keep oMLX bound to `localhost`;
+- use an SSH tunnel for remote access;
+- configure API authentication;
+- generate secrets with `openssl rand`;
+- keep real secrets out of Git;
 - keep `.env` ignored;
-- avoid exposing port 8000 directly to the public Internet;
-- use a VPN/Tailscale-style private network if you need broader remote access;
-- rotate a key if it is ever exposed.
+- do not expose port `8000` directly to the public Internet;
+- use a private VPN such as Tailscale if you need broader remote access;
+- rotate the API key if it is ever exposed.
 
 Generate a replacement key:
 
@@ -1032,162 +1123,119 @@ Generate a replacement key:
 openssl rand -hex 32
 ```
 
-Never put the real key in:
-
-```text
-README.md
-Makefile
-.env.example
-GitHub issues
-screenshots
-shell scripts committed to Git
-```
+> [!CAUTION]
+> If you expose oMLX beyond localhost, API authentication alone should not be treated as a complete Internet-facing security architecture.
 
 ---
 
-# 19. Useful paths
+# Useful paths
 
-Default model directory:
-
-```text
-~/.omlx/models
-```
-
-Global settings:
-
-```text
-~/.omlx/settings.json
-```
-
-Server application log:
-
-```text
-~/.omlx/logs/server.log
-```
-
-Homebrew service log:
-
-```bash
-$(brew --prefix)/var/log/omlx.log
-```
-
-oMLX binary in the tested Homebrew setup:
-
-```text
-/opt/homebrew/bin/omlx
-```
+| Purpose | Path |
+|---|---|
+| Models | `~/.omlx/models` |
+| Settings | `~/.omlx/settings.json` |
+| Server logs | `~/.omlx/logs/server.log` |
+| Homebrew oMLX log | `$(brew --prefix)/var/log/omlx.log` |
+| Homebrew binary on tested machine | `/opt/homebrew/bin/omlx` |
 
 ---
 
-# 20. Known-good M5 Pro 24 GB profile
+# Known-good M5 Pro 24 GB profile
 
-This is the tested configuration, not a universal recommendation.
+This section records the exact profile validated while creating this guide.
+
+> [!IMPORTANT]
+> Treat this as a reproducible reference point, not as a universal recommendation.
+
+## Hardware
 
 ```text
-Hardware
---------
+Mac mini
 Apple M5 Pro
 24 GB unified memory
+arm64
+```
 
-Software
---------
+## Software
+
+```text
 macOS 27.0
 oMLX 0.7.0
+```
 
-Model
------
+## Model
+
+```text
 Jundot/Qwen3.8-27B-oQ4e-mtp
 ~16 GiB on disk
+```
 
-oMLX
-----
+## Runtime configuration
+
+```text
 API authentication: enabled
 Memory guard: aggressive
-
-Model settings
---------------
 Lightning MTP: enabled
 Adaptive max depth: 3
 ```
 
-### Measured long-generation results
-
-Without MTP:
+## Baseline
 
 ```text
-~16.9 tok/s generation
+Prompt tokens:        93
+Completion tokens:    1000
+TTFT:                 0.53 s
+Generation:           16.91 tok/s
+Total time:           59.66 s
 ```
 
-With Lightning MTP depth 3:
+## MTP warm benchmark
 
 ```text
-26.09 tok/s warm benchmark
-27.07 tok/s second long benchmark
+Prompt tokens:        93
+Completion tokens:    1000
+Cached prompt tokens: 88
+TTFT:                 0.27 s
+Generation:           26.09 tok/s
+Total time:           38.60 s
 ```
 
-Observed memory state with the model loaded and MTP active:
+## Second long prompt
 
 ```text
-memory_pressure free percentage: 24%
-pages throttled: 0
-swap used during observed session: ~183 MB
+Prompt tokens:        101
+Completion tokens:    1200
+TTFT:                 0.83 s
+Prompt processing:    121.79 tok/s
+Generation:           27.07 tok/s
+Total time:           45.16 s
 ```
 
-The system remained responsive in the tested session.
+## Memory observed with MTP enabled
 
-Do not treat those exact memory numbers as a requirement or guarantee. macOS memory behavior varies dynamically.
+```text
+System-wide memory free percentage: 24%
+Pages throttled:                     0
+Pageouts:                            17
+Swap used:                           ~182.62 MB
+```
+
+Earlier in the same session, before the MTP testing sequence, observed swap usage was approximately:
+
+```text
+15.56 MB
+```
+
+> [!NOTE]
+> macOS swap counters and memory state are dynamic. These values describe one observed session and should not be interpreted as fixed requirements.
 
 ---
 
-# Repository metadata
+# Contributing benchmarks
 
-Suggested repository name:
+Community benchmark contributions are welcome.
 
-```text
-omlx-local-ai-server
-```
-
-Suggested GitHub description:
-
-```text
-Turn an Apple Silicon Mac into a private OpenAI-compatible local inference server with oMLX + Qwen, SSH tunneling, API auth, Lightning MTP tuning, benchmarks, and Makefile automation.
-```
-
-Suggested GitHub topics:
-
-```text
-apple-silicon
-macos
-mlx
-omlx
-qwen
-qwen3
-local-llm
-llm-inference
-inference-server
-openai-api
-self-hosted
-ssh-tunnel
-homebrew
-developer-tools
-ai
-```
-
----
-
-## References
-
-- oMLX: https://github.com/jundot/omlx
-- Hugging Face: https://huggingface.co/
-- Tested model: https://huggingface.co/Jundot/Qwen3.8-27B-oQ4e-mtp
-
----
-
-## Contributing
-
-Hardware results are especially useful.
-
-When submitting a benchmark, include:
+Please include enough information to make the result reproducible:
 
 ```text
 Mac model:
@@ -1196,19 +1244,39 @@ GPU cores:
 Unified memory:
 macOS:
 oMLX version:
+
 Model:
 Quantization:
+Model size:
+
 Context:
-MTP enabled:
+Prompt tokens:
+Completion tokens:
+
+Memory guard:
+Lightning MTP:
 MTP depth:
+
+Model load time:
 TTFT:
 Prompt tok/s:
 Generation tok/s:
-Peak/observed memory:
-Swap:
+Total time:
+
+memory_pressure:
+Swap usage:
 ```
 
-This makes results comparable instead of anecdotal.
+> [!TIP]
+> Include both a cold and a warm request when possible. Warm throughput is much easier to compare across systems.
+
+---
+
+# References
+
+- [oMLX](https://github.com/jundot/omlx)
+- [Hugging Face](https://huggingface.co/)
+- [Jundot/Qwen3.8-27B-oQ4e-mtp](https://huggingface.co/Jundot/Qwen3.8-27B-oQ4e-mtp)
 
 ---
 
@@ -1216,4 +1284,4 @@ This makes results comparable instead of anecdotal.
 
 Local inference performance and memory behavior can change significantly between macOS, MLX, oMLX, model, and quantization versions.
 
-Always benchmark the exact configuration you intend to use.
+Benchmark the exact configuration you intend to use before relying on it for production workloads.
